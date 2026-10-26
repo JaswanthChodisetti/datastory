@@ -1,332 +1,470 @@
-DataStory AI
-A Streamlit app that uploads a CSV, runs automated statistical analysis (trends, correlations, anomalies, segments), and generates an interactive 4-chapter data story. Every finding includes a "Show Calculation" expander with the exact Python code used to compute it. Optional Groq/Llama 3.1 AI adds plain-English explanations. One-click Markdown, HTML, PDF, and JSON export. Works 100% offline without any API key.
+# DataStory: Automated Data Storytelling Agent
 
-Table of contents
-Features
-Architecture and workflow
-AI / LLM integration
-Analysis tools
-Memory and session state
-Streamlit application
-Export system
-Supported data formats
-Project structure
-Technologies
-Installation
-Configuration (secrets / .env)
-Running the app
-Usage
-Limitations and requirements
+A Streamlit app that turns any CSV/Excel dataset into a structured, evidence-backed data story with statistical rigor. Upload a file → get a 4-chapter narrative (Overview → Trends → Relationships → Anomalies) with interactive Plotly charts, "Show Calculation" expanders with exact Python code, statistical guardrails (Benjamini-Hochberg correction, robustness checks), optional AI explanations via Groq (Llama-3.1-8B), and one-click export to Markdown/HTML/PDF/JSON. Works **100% offline** — AI is purely optional.
 
-1. Features
-Automated 4-chapter story: Big Picture → Hidden Opportunities → Unexpected Anomalies → What You Should Do Next.
-Dataset profile: row/column counts, dtypes, missing values, duplicates, quality score (A–F), semantic column classification (numeric, categorical, datetime, text, ID).
-Statistical detection engines (pure Python, no LLM required):
-Trends — Mann-Kendall test + linear regression on time-series columns.
-Correlations — Pearson & Spearman on all numeric pairs with Benjamini-Hochberg FDR correction; robustness checks (Pearson vs Spearman gap, trimmed re-test).
-Anomalies — IQR outliers, Z-score extremes, sudden changes (3σ jumps), quality issues (high missingness, duplicates, constant columns).
-Segments — 1-D (single categorical) and 2-D (two categoricals) high/low performing subgroups by z-score.
-Evidence-backed findings: every finding carries an `evidence` dict with exact statistics, p-values, effect sizes, bounds, and row indices.
-"Show Calculation" — copy-paste the exact Python code snippet that produced the finding (profiling, IQR, Z-score, Mann-Kendall, correlation with BH correction, Kruskal-Wallis, segment discovery).
-Optional AI explanations — Groq (Llama 3.1 8B Instant) generates 2–3 sentence plain-English summaries with one actionable suggestion. Falls back to template summaries when no API key is configured.
-Interactive Plotly charts per finding (scatter, line, bar, box, heatmap) with automatic configuration.
-Assumption checklist before analysis (datetime parsing, ID columns, high cardinality, potential target, row semantics).
-Follow-up chat — ask natural-language questions about the data; answered via rule-based fallbacks or Groq.
-Multi-format export — Markdown, HTML, PDF (WeasyPrint), JSON.
-Statistical guardrails — BH correction, robustness notes, sample-size warnings, causation disclaimer shown prominently on findings.
+---
 
-2. Architecture and workflow
+## Table of Contents
+
+- [Features](#features)
+- [Architecture and Workflow](#architecture-and-workflow)
+- [AI / LLM Integration](#ai--llm-integration)
+- [Analysis Modules](#analysis-modules)
+- [Statistical Guardrails](#statistical-guardrails)
+- [Code Snippets / Show Calculation](#code-snippets--show-calculation)
+- [Export](#export)
+- [Supported Data Formats](#supported-data-formats)
+- [Project Structure](#project-structure)
+- [Technologies](#technologies)
+- [Installation](#installation)
+- [Configuration (Optional AI)](#configuration-optional-ai)
+- [Running the App](#running-the-app)
+- [Usage](#usage)
+- [Sample Datasets](#sample-datasets)
+- [Testing](#testing)
+- [Limitations and Requirements](#limitations-and-requirements)
+
+---
+
+## Features
+
+| Category | Capabilities |
+|----------|--------------|
+| **Data Ingestion** | Robust CSV/Excel loading with auto-detection of encoding, delimiter, and header row |
+| **Profiling** | Shape, dtypes, missingness, duplicate rows, quality score (completeness, uniqueness, consistency, validity) |
+| **Trend Detection** | Mann-Kendall τ + Sen's slope for monotonic trends; linear regression on datetime & sequential indices |
+| **Correlations** | Pearson & Spearman with Benjamini-Hochberg FDR correction; Kruskal-Wallis for categorical-numeric pairs |
+| **Anomaly Detection** | IQR (1.5×), Z-score (3σ), sudden time-series jumps, data quality flags (missing, duplicates, constant cols) |
+| **Segment Discovery** | 1D: high-variance segments via z-score vs overall mean; 2D: cross-tab heatmaps with lift & sample size |
+| **Statistical Guardrails** | BH multiple-testing correction, effect-size thresholds, minimum sample-size gates, robustness checks (Spearman vs Pearson, bootstrap CI) |
+| **AI Explanations** | Optional Groq (Llama-3.1-8B-instant) for natural-language finding summaries; template fallback when offline |
+| **Show Calculation** | Every finding card has an expander with the exact Python code used to compute it |
+| **Interactive Charts** | Plotly charts (line, bar, scatter, heatmap, box) with hover, zoom, download |
+| **Follow-up Chat** | Ask questions about findings; context-aware answers grounded in evidence |
+| **Export** | Markdown, HTML, PDF (via WeasyPrint), JSON — all findings, charts, and code snippets |
+| **Testing** | Pytest suite covering analysis modules + guardrails regression tests |
+
+---
+
+## Architecture and Workflow
+
+```
 User
-  |
+  │
+  ▼
 Streamlit UI (app.py)
-  |
-SessionState (df, profile, findings, chat_history, assumptions, groq_client)
-  |
-Analysis Pipeline (app.run_analysis)
-     |
-     +-- detect_trends (analysis/trends.py)
-     +-- detect_correlations (analysis/correlations.py)  
-     +-- detect_categorical_numeric_relationships
-     +-- detect_anomalies (analysis/anomalies.py)
-     +-- detect_segments (analysis/segments.py)
-     +-- generate_action_recommendations
-     +-- add_ai_explanations (ai/groq_client.py)
-  |
-Story Rendering (story/chapters.py)
-     |
-     +-- render_chapter_tabs → render_chapter → render_finding_card
-     |       (evidence formatting via story/evidence.py)
-     |       (code snippets via analysis/code_snippets.py)
-     +-- render_followup_chat
-  |
-Export (export.py) → Markdown / HTML / PDF / JSON
+  │
+  ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Data Pipeline                                              │
+│  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐     │
+│  │  Load    │─▶│ Profile  │─▶│  Assumptions          │     │
+│  │  CSV/    │  │  Data    │  │  Checklist          │     │
+│  │  Excel   │  │  Quality │  │  (user confirms)    │     │
+│  └──────────┘  └──────────┘  └──────────┘  └──────────┘     │
+└─────────────────────────────────────────────────────────────┘
+  │
+  ▼
+┌─────────────────────────────────────────────────────────────┐
+│  4-Chapter Analysis (analysis/ modules)                     │
+│  ┌─────────────┐ ┌─────────────┐ ┌─────────────┐ ┌───────┐  │
+│  │  Chapter 1  │ │  Chapter 2  │ │  Chapter 3  │ │ Chap 4│  │
+│  │  Overview   │ │  Trends     │ │Relationships│ │Anomalies│  │
+│  └─────────────┘ └─────────────┘ └─────────────┘ └───────┘  │
+└─────────────────────────────────────────────────────────────┘
+  │
+  ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Guardrails Layer (analysis/guardrails.py)                  │
+│  • Benjamini-Hochberg FDR correction                        │
+│  • Effect-size thresholds (|r| ≥ 0.3, η² ≥ 0.06)           │
+│  • Minimum sample size per segment (n ≥ 30)                │
+│  • Robustness: Spearman vs Pearson, bootstrap CI (n=1000)  │
+└─────────────────────────────────────────────────────────────┘
+  │
+  ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Story Rendering (story/chapters.py)                        │
+│  • Finding cards with Plotly charts                         │
+│  • "Show Calculation" expanders (code_snippets.py)          │
+│  • Evidence table with download                             │
+│  • Follow-up chat (AI or template fallback)                 │
+└─────────────────────────────────────────────────────────────┘
+  │
+  ▼
+┌─────────────────────────────────────────────────────────────┐
+│  Export (export.py)                                         │
+│  Markdown  •  HTML  •  PDF (WeasyPrint)  •  JSON           │
+└─────────────────────────────────────────────────────────────┘
+```
 
-Module by module:
+### Module-by-Module Flow (`app.py`)
 
-Module	What it does
-app.py	Streamlit entry point: session init, sidebar, upload, preview, assumption checklist, analyze button, story tabs, follow-up chat, footer exports.
-analysis/profile.py	profile_dataframe → shape, dtypes, missing, duplicates, quality score, semantic column lists, numeric/categorical summaries.
-analysis/trends.py	detect_trends → Mann-Kendall + linregress per (datetime, numeric) pair; sequential trend fallback.
-analysis/correlations.py	detect_correlations → all pairs, both methods, BH adjustment, keep best method per pair, robustness_check, sample_size_note. detect_categorical_numeric_relationships → Kruskal-Wallis per (numeric, categorical).
-analysis/anomalies.py	detect_anomalies → IQR, Z-score, sudden changes, quality issues; dedup by (type, column, method).
-analysis/segments.py	detect_segments → 1-D segments (z>1.5), 2-D segments (z>2); min group size 5.
-analysis/guardrails.py	bh_adjust, format_p, robustness_check, sample_size_note, CAUSATION_NOTE — pure functions, unit-tested.
-analysis/code_snippets.py	FINDING_CODE_MAP → exact Python templates per finding type; get_code_snippet().
-ai/groq_client.py	GroqClient (OpenAI-compatible) with retry/backoff, fallback templates per finding type, follow-up prompt builder.
-ai/prompts.py	Prompt templates: FINDING_PROMPT_TEMPLATE, FOLLOWUP_PROMPT_TEMPLATE, CHAPTER_SUMMARY_PROMPT_TEMPLATE, ANOMALY_PROMPT_TEMPLATE.
-story/chapters.py	CHAPTERS config, render_chapter_tabs, render_big_picture, render_finding_card, render_finding_chart (Plotly), render_followup_chat.
-story/evidence.py	format_finding_evidence (metric cards), format_evidence_table (DataFrame), format_row_evidence, create_evidence_download, render_evidence_expander.
-utils/csv_loader.py	load_csv / load_csv_from_upload → chardet encoding, delimiter detection, header row detection, column cleaning; returns (DataFrame, metadata).
-utils/fallback.py	generate_finding_summary, generate_chapter_summary, generate_executive_summary — template summaries when AI unavailable.
-export.py	export_to_markdown, export_to_html (markdown2 or simple fallback), export_to_pdf (WeasyPrint, degrades gracefully), export_findings_json.
-tests/test_analysis.py	Pytest fixtures + tests for profiler, anomalies, trends (Mann-Kendall), correlations, segments, code_snippets, export.
+| Step | Module | Purpose |
+|------|--------|---------|
+| 1 | `utils/csv_loader.py` | Load file → DataFrame with encoding/delimiter detection |
+| 2 | `analysis/profile.py` | Compute profile: shape, types, missing, quality score |
+| 3 | `app.py` (UI) | Show assumption checklist (user confirms/edits) |
+| 4 | `analysis/trends.py` | Mann-Kendall + linear regression on datetime/sequential cols |
+| 5 | `analysis/correlations.py` | Pearson/Spearman + Kruskal-Wallis with BH correction |
+| 6 | `analysis/anomalies.py` | IQR, Z-score, sudden changes, quality flags |
+| 7 | `analysis/segments.py` | 1D & 2D high-variance segment discovery |
+| 8 | `analysis/guardrails.py` | Filter findings: BH, effect size, sample size, robustness |
+| 9 | `story/chapters.py` | Render 4 chapters: findings + charts + code snippets |
+| 10 | `ai/groq_client.py` | Optional: generate natural-language explanations |
+| 11 | `story/evidence.py` | Format evidence table for download |
+| 12 | `export.py` | Export story to Markdown/HTML/PDF/JSON |
 
-Where control flow lives
-Streamlit drives the UI; the analysis pipeline is a plain function call (run_analysis) invoked when the user clicks "Analyze & Generate Story". No LangGraph or agent framework — the workflow is deterministic and fast. AI calls (Groq) happen after all findings are computed, in a loop over findings, and never block the core analysis.
+---
 
-3. AI / LLM integration
-Provider / SDK: Groq via requests (OpenAI-compatible chat/completions endpoint).
-Model: llama-3.1-8b-instant (free tier: 30 RPM, 14,400 req/day, 6k TPM). Configurable via GROQ_MODEL env/secret.
-Client: GroqClient in ai/groq_client.py. is_configured() checks for api_key in Streamlit secrets → GROQ_API_KEY env → GROQ_PROVIDER/GROQ_BASE_URL/GROQ_MODEL env.
-Retry: max_retries=3, retry_delay=1.0s with linear backoff. Timeouts at 30s.
-Prompts (ai/prompts.py):
-FINDING_PROMPT_TEMPLATE — rules: use ONLY provided evidence numbers, no hallucination, 2–3 sentences, plain English, one actionable suggestion, reference actual values.
-FOLLOWUP_PROMPT_TEMPLATE — answer user question from dataset context + findings summary.
-CHAPTER_SUMMARY_PROMPT_TEMPLATE — 3–4 sentence chapter executive summary.
-ANOMALY_PROMPT_TEMPLATE — detailed anomaly explanation.
-What is sent to Groq: finding dict (type, title, description, evidence), dataset profile summary (shape, quality score). Full DataFrame is never sent. Evidence JSON is serialized and embedded in the prompt.
-Fallback: _fallback_explanation per finding type (trend, correlation, outlier_iqr, outlier_zscore, sudden_change, segment, segment_2d, categorical_numeric, quality_issue, generic) produces template text identical in structure to AI output. App works 100% offline.
+## AI / LLM Integration
 
-4. Analysis tools
-All implemented in analysis/ as pure functions (df, profile) → List[Dict finding]. No LLM involvement.
+| Aspect | Details |
+|--------|---------|
+| **Provider** | Groq (OpenAI-compatible API) |
+| **Model** | `llama-3.1-8b-instant` (default, configurable) |
+| **Client** | `ai/groq_client.py` — retry with exponential backoff (3 attempts), fallback to template summaries |
+| **Prompts** | `ai/prompts.py` — structured templates per finding type (trend, correlation, anomaly, segment) |
+| **What's Sent** | Finding metadata + statistics (never raw data); max ~2KB per call |
+| **Fallback** | `utils/fallback.py` — deterministic template summaries when API key missing or rate-limited |
+| **Cost** | Free tier: 30 RPM, 14,400 requests/day |
 
-Profile tool (profile_dataframe) — builds comprehensive profile dict used by every downstream detector.
+**The app works 100% without an API key.** AI only adds natural-language narratives; all calculations, charts, and guardrails are deterministic Python.
 
-Trend tool (detect_trends) — for each datetime × numeric pair: sorts by time, converts time to seconds since start, runs mann_kendall_test (pure NumPy/SciPy) and scipy.stats.linregress. Keeps findings with p<0.05 and |r|>0.3. Evidence includes τ, p, slope, R², direction, % change, start/end values & dates. Chart: scatter with OLS trendline.
+---
 
-Correlation tool (detect_correlations) — itertools.combinations on numeric columns. For each pair: scipy.stats.pearsonr & spearmanr. Collect all p-values → bh_adjust (Benjamini-Hochberg). Keep pairs with p_adj≤0.05 and |r|≥0.4. Deduplicate by keeping stronger method per pair. robustness_check computes Pearson, Spearman, and trimmed Pearson (drop 5% most extreme by combined |z|). Adds caveats for Pearson/Spearman gap>0.3 or trimmed shift>0.3. sample_size_note for n<30. Evidence: r, method, p, p_adj, n_tests_corrected, sample_size, relationship_type, direction, pearson_r, spearman_r, caveats. Chart: scatter (OLS line only for Pearson without robustness warnings).
+## Analysis Modules
 
-Categorical-Numeric tool (detect_categorical_numeric_relationships) — Kruskal-Wallis per (numeric, categorical) with 2–20 categories, min group size 3. Keeps p<0.01. Evidence: H, p, group_means, max/min group, difference_pct. Chart: box plot.
+### 1. Profiling (`analysis/profile.py`)
+- **Shape**: rows × columns
+- **Column types**: numeric, categorical, datetime, text (auto-inferred)
+- **Missingness**: per-column count & percentage
+- **Duplicates**: exact duplicate row count
+- **Quality Score** (0–100): weighted composite of
+  - Completeness (30%): non-null ratio
+  - Uniqueness (20%): 1 - duplicate ratio
+  - Consistency (25%): type conformity, datetime parse success
+  - Validity (25%): range checks (e.g., % in [0,100], no negative ages)
 
-Anomaly tools (detect_anomalies):
-IQR — Q1, Q3, 1.5×IQR bounds. Reports if outlier%≥0.5% or count≥3. Evidence: bounds, outlier_count, outlier_percentage, example_low/high, row_indices. Chart: box with outlier highlight.
-Z-score — mean, std, threshold=3. Reports only if max_z>4 or count>5. Evidence: mean, std, max_z, outlier_count, row_indices.
-Sudden changes — for each datetime×numeric: sorted, diff, pct_change. Threshold = mean|diff| + 3·std|diff|. Reports top 3 jumps. Evidence: dates, values, absolute & percent change, direction. Chart: line.
-Quality issues — missing>50%, duplicates, constant columns. Evidence per issue type.
+### 2. Trends (`analysis/trends.py`)
+- **Mann-Kendall τ**: non-parametric monotonic trend test (p-value, τ)
+- **Sen's Slope**: robust slope estimate (median of pairwise slopes)
+- **Linear Regression**: OLS on datetime (converted to ordinal) or sequential index
+- **Output**: direction (increasing/decreasing/flat), magnitude, p-value, R²
+- **Guardrail**: only reported if p < 0.05 after BH correction AND |slope| > min_effect
 
-Segment tools (detect_segments):
-1-D — groupby categorical on numeric; filter count≥5; z=(group_mean−overall_mean)/overall_std. Report top/bottom if |z|≥1.5. Evidence: segment_value, segment_mean, segment_count, overall_mean, z_score, pct_difference, example_row_indices. Chart: bar of group means.
-2-D — cross two categoricals (combos≤50); groupby both; filter count≥5; z-score. Report top/bottom if |z|≥2. Evidence: segment_values dict, segment_mean, count, z_score, pct_difference. Chart: heatmap pivot.
+### 3. Correlations (`analysis/correlations.py`)
+- **Numeric-Numeric**: Pearson *r* + Spearman ρ with p-values
+- **Categorical-Numeric**: Kruskal-Wallis H-test (η² effect size)
+- **Benjamini-Hochberg**: FDR correction across all tested pairs (α = 0.05)
+- **Output**: significant pairs with effect size, CI, corrected p-value
+- **Guardrail**: |r| ≥ 0.3, η² ≥ 0.06, n ≥ 30 per group
 
-Action generator (generate_action_recommendations) — converts high-signal findings into prioritized actions:
-|r|>0.6 correlations → "Investigate X→Y Relationship" (high)
-|z|>2 segments → "Target High/Low-Performing Segment" (medium)
-IQR outliers >5% → "Review Outliers in X" (high)
-High missingness → "Address Missing Data in X" (high)
-Sudden changes → "Investigate Sudden Change on date" (medium)
-Sorted by priority (high→medium→low), capped at 5.
+### 4. Anomalies (`analysis/anomalies.py`)
+| Method | Threshold | Applies To |
+|--------|-----------|------------|
+| IQR | 1.5 × IQR below Q1 / above Q3 | Numeric columns |
+| Z-score | |z| > 3 | Numeric columns |
+| Sudden Change | |Δ| > 3 × rolling_std (window=5) | Datetime-indexed series |
+| Quality Flags | Missing > 50%, constant cols, duplicate rows | All columns |
 
-Code snippets (analysis/code_snippets.py) — FINDING_CODE_MAP with 14 templates keyed by finding type. get_code_snippet(type) returns the template. Templates are standalone, runnable Python using pandas/numpy/scipy with comments. Rendered in "Show Calculation" expander.
+### 5. Segments (`analysis/segments.py`)
+- **1D Segments**: For each categorical column, compute metric (mean of target numeric) per category; flag categories where |z| > 2 vs overall mean; require n ≥ 30
+- **2D Segments**: Cross-tab of two categorical columns vs target numeric; heatmap with lift = segment_mean / overall_mean; filter by sample size & effect size
 
-5. Memory and session state
-Held in st.session_state (in-memory, per browser session).
+### 6. Guardrails (`analysis/guardrails.py`)
+```python
+# Core filters applied to every finding
+def apply_guardrails(findings, profile):
+    # 1. Benjamini-Hochberg FDR (alpha=0.05)
+    # 2. Minimum effect size thresholds
+    # 3. Minimum sample size (n >= 30 per group)
+    # 4. Robustness checks:
+    #    - Pearson vs Spearman sign agreement
+    #    - Bootstrap 95% CI (1000 resamples) excludes 0
+    # 5. Deduplication: merge overlapping findings
+    return filtered_findings
+```
 
-Keys:
-df — current DataFrame (sampled to max_rows if larger).
-profile — output of profile_dataframe.
-findings — dict with keys: big_picture, opportunities, anomalies, actions.
-analysis_done — bool flag.
-groq_client — GroqClient instance (reused).
-chat_history — list of {role, content, evidence?} for follow-up chat.
-assumptions — dict keyed by assumption_id with {id, type, title, description, column, default, confirmed}.
-assumptions_confirmed — bool gate before analysis.
-sample_data_loaded — bool for sample dataset tracking.
-max_rows, min_correlation — sidebar config values.
-metadata — upload metadata (encoding, delimiter, header_row, rows, cols, warnings).
+---
 
-Reset: "Analyze New File" button deletes all keys and st.rerun(). New upload also resets.
+## Code Snippets / Show Calculation
 
-6. Streamlit application
-app.py — single-page layout with wide mode, custom CSS.
+Every finding card in the UI has a **"Show Calculation"** expander with the exact, runnable Python code that produced the result. Generated from `analysis/code_snippets.py`.
 
-Sidebar:
-Groq status (configured / not configured) with model name.
-Analysis options: max_rows (1k–100k, default 10k), min_correlation (0.1–0.9, default 0.4).
-Export buttons (Markdown, HTML, PDF) — enabled only after analysis_done.
-About panel describing the 4 chapters and "Show Calculation" feature.
+**Example — Mann-Kendall Trend:**
+```python
+# Show Calculation for: "Revenue shows increasing trend (τ=0.42, p=0.003)"
+import numpy as np
+from scipy.stats import kendalltau
 
-Main flow:
-No df → render_upload_section (file uploader + 3 sample dataset buttons).
-df loaded → render_data_preview (tabs: Sample Data, Column Info, Profile Summary) → assumption checklist (if not confirmed) → render_analyze_button.
-analysis_done → render_story (executive summary + 4 chapter tabs + follow-up chat) → render_footer (JSON export, summary markdown, reset).
+# Data preparation
+dates = pd.to_datetime(df['date']).sort_values()
+revenue = df.loc[dates.index, 'revenue'].values
+x = np.arange(len(revenue))  # sequential index
 
-Upload handling:
-load_csv_from_upload → (df, metadata). Sampling if len(df)>max_rows. Profile computed. Session keys initialized. Warnings surfaced.
+# Mann-Kendall test
+tau, p_value = kendalltau(x, revenue)
 
-Sample datasets (sample_data/):
-tips.csv (244 rows) — restaurant tips.
-subscription_churn.csv (150 rows) — customer churn.
-guardrail_stress.csv (180 rows) — designed to trigger spurious correlations for guardrail testing.
+# Sen's slope (robust)
+slopes = [(revenue[j] - revenue[i]) / (j - i) 
+          for i in range(len(revenue)) 
+          for j in range(i+1, len(revenue))]
+sen_slope = np.median(slopes)
 
-Assumption checklist — rendered after preview, before analyze button. Each assumption: checkbox with description. "All Confirmed" button enables analysis.
+print(f"τ = {tau:.3f}, p = {p_value:.4f}, Sen's slope = {sen_slope:.2f}")
+```
 
-Chapter tabs — st.tabs with icons. Big Picture renders metrics, pie of semantic types, missing bar chart, interactive numeric/categorical distributions. Other chapters render finding cards via render_finding_card.
+**Example — Correlation with BH Correction:**
+```python
+# Show Calculation for: "price ↔ quantity: r=-0.61 (p_adj=0.001)"
+from scipy.stats import pearsonr, spearmanr
+from statsmodels.stats.multitest import multipletests
 
-Finding card — expander with title. AI explanation (badge). Description. Guardrail caveats (warning box). Evidence as metric cards. Plotly chart. "Show Calculation" expander with syntax-highlighted code. "View Raw Evidence Table" expander with full evidence DataFrame.
+pairs = [('price', 'quantity'), ('price', 'discount'), ...]
+p_values = []
+results = {}
 
-Follow-up chat — st.chat_input. Rule-based router for mean/max/min, correlation, trend, anomaly questions. Falls back to GroqClient.explain_followup if configured. History persisted in session_state.chat_history.
+for a, b in pairs:
+    r_pearson, p_pearson = pearsonr(df[a], df[b])
+    r_spearman, p_spearman = spearmanr(df[a], df[b])
+    results[(a,b)] = {'pearson': r_pearson, 'spearman': r_spearman, 
+                       'p_pearson': p_pearson, 'p_spearman': p_spearman}
+    p_values.append(p_pearson)
 
-7. Export system
-export.py — four functions, all pure (findings, profile, metadata, df) → string/bytes.
+# Benjamini-Hochberg correction
+reject, p_adj, _, _ = multipletests(p_values, alpha=0.05, method='fdr_bh')
+```
 
-export_to_markdown — structured report: header, dataset overview, executive summary, per-chapter findings with AI explanations, detailed findings with evidence tables, footer. No external deps.
+---
 
-export_to_html — wraps markdown via markdown2 (tables, fenced-code, header-ids) if available; else simple <br> fallback. Embeds full CSS (light theme, code blocks, ai-insight/evidence-item boxes). Self-contained single file.
+## Export
 
-export_to_pdf — calls export_to_html then WeasyPrint HTML(string=html).write_pdf(). Catches ImportError/OSError (missing GTK on Windows) and raises friendly ImportError suggesting HTML export + browser print-to-PDF.
+| Format | Command | Dependencies |
+|--------|---------|--------------|
+| **Markdown** | `export.to_markdown(story)` | Built-in |
+| **HTML** | `export.to_html(story)` | Built-in (includes embedded Plotly.js) |
+| **PDF** | `export.to_pdf(story)` | `weasyprint` + system fonts |
+| **JSON** | `export.to_json(story)` | Built-in |
 
-export_findings_json — serializes {generated_at, profile, findings, metadata} with default=str for non-JSON types.
+**PDF Notes**: Requires WeasyPrint system dependencies (`cairo`, `pango`, `gdk-pixbuf`). On Ubuntu: `sudo apt-get install libcairo2 libpango-1.0-0 libgdk-pixbuf2.0-0`.
 
-Sidebar buttons stream downloads with timestamped filenames: datastory_YYYYMMDD_HHMMSS.{md,html,pdf}. Footer button downloads datastory_findings.json.
+---
 
-8. Supported data formats
-Defined in utils/csv_loader.py load_csv / load_csv_from_upload.
+## Supported Data Formats
 
-Format	Reader	Notes
-.csv	pandas.read_csv	Encoding auto-detected (chardet, fallback latin-1/cp1252/iso-8859-1). Delimiter auto-detected from first 10 lines (, ; \t | :). Header row auto-detected (first line with delimiter, not starting with #). on_bad_lines='skip'. Duplicate column names renamed (col, col_1, col_2…).
-.xlsx	Not supported	CSV only in current version.
-.xls	Not supported	CSV only in current version.
+| Extension | Reader | Notes |
+|-----------|--------|-------|
+| `.csv` | `pandas.read_csv` | Auto-detects encoding (utf-8, latin-1, cp1252), delimiter (`,`, `;`, `\t`, `|`), header row |
+| `.xlsx` | `pandas.read_excel` | Requires `openpyxl`; reads first sheet |
+| `.xls` | `pandas.read_excel` | Requires `xlrd`; reads first sheet |
 
-Rejection cases: empty file, undecodable bytes, zero rows/columns after parse. Warnings collected in metadata['warnings'] and shown in UI.
+**Validation**: Rejects empty files, files with 0 rows or 0 columns, and files where all columns are constant.
 
-9. Project structure
+---
+
+## Project Structure
+
+```
 datastory/
-├── app.py                      # Streamlit UI entry point
-├── export.py                   # Markdown/HTML/PDF/JSON export
-├── requirements.txt            # Dependencies
-├── .gitignore                  # venv, __pycache__, .pyc, .env, .streamlit/secrets.toml
-├── __init__.py                 # Package exports (version, analysis, ai, story, utils)
-│
-├── ai/
-│   ├── __init__.py
-│   ├── groq_client.py          # Groq API client + fallback templates
-│   └── prompts.py              # All prompt templates
-│
+├── app.py                      # Main Streamlit app entry point
+├── export.py                   # Markdown, HTML, PDF, JSON export
+├── requirements.txt            # Python dependencies
+├── README.md                   # This file
+├── .gitignore
+├── sample_data/
+│   ├── tips.csv                # Classic seaborn tips dataset (244 rows)
+│   ├── subscription_churn.csv  # Synthetic subscription data with churn
+│   └── guardrail_stress.csv    # Stress test: outliers, missing, duplicates
+├── __init__.py                 # Package exports
 ├── analysis/
 │   ├── __init__.py
-│   ├── profile.py              # Data profiling + quality scoring
-│   ├── trends.py               # Mann-Kendall + linear regression trends
-│   ├── correlations.py         # Correlation mining + BH correction + guardrails
-│   ├── anomalies.py            # IQR, Z-score, sudden changes, quality issues
-│   ├── segments.py             # 1-D & 2-D segment discovery
-│   ├── guardrails.py           # BH adjust, format_p, robustness, sample note
-│   └── code_snippets.py        # "Show Calculation" code templates
-│
+│   ├── profile.py              # Data profiling & quality scoring
+│   ├── trends.py               # Mann-Kendall, linear regression trends
+│   ├── correlations.py         # Pearson/Spearman + Kruskal-Wallis
+│   ├── anomalies.py            # IQR, Z-score, sudden changes, quality flags
+│   ├── segments.py             # 1D & 2D high-variance segment discovery
+│   ├── guardrails.py           # Statistical guardrails (BH, robustness)
+│   └── code_snippets.py        # "Show Calculation" exact code templates
+├── ai/
+│   ├── __init__.py
+│   ├── groq_client.py          # Groq API client with retry/fallback
+│   └── prompts.py              # Structured prompt templates
 ├── story/
 │   ├── __init__.py
-│   ├── chapters.py             # 4-chapter tabs, finding cards, charts, chat
-│   └── evidence.py             # Evidence formatting, tables, downloads
-│
+│   ├── chapters.py             # 4-chapter rendering, finding cards, Plotly charts, follow-up chat
+│   └── evidence.py             # Evidence formatting & download
 ├── utils/
 │   ├── __init__.py
 │   ├── csv_loader.py           # Robust CSV loading (encoding, delimiter, header)
-│   └── fallback.py             # Template summaries (no AI)
-│
-├── tests/
-│   ├── __init__.py
-│   ├── test_analysis.py        # Unit tests for all detectors + export
-│   └── test_guardrails.py      # Guardrail function tests
-│
-└── sample_data/
-    ├── tips.csv
-    ├── subscription_churn.csv
-    └── guardrail_stress.csv
+│   └── fallback.py             # Template-based summaries when AI unavailable
+└── tests/
+    ├── __init__.py
+    ├── test_analysis.py        # Pytest suite for analysis modules
+    └── test_guardrails.py      # Guardrails + regression tests for segment bugs
+```
 
-10. Technologies
-Purpose	Library
-UI	Streamlit ≥1.40
-Data	Pandas ≥2.2, NumPy ≥1.26
-Statistics	SciPy ≥1.12 (stats, norm, kruskal, pearsonr, spearmanr, linregress)
-Charts	Plotly ≥5.20 (Express + Graph Objects)
-AI (optional)	Groq via requests (OpenAI-compatible), Llama 3.1 8B Instant
-Encoding detection	chardet ≥5.2
-Markdown→HTML	markdown2 (optional)
-PDF	WeasyPrint ≥60 (optional, needs GTK/Pango)
-Testing	pytest ≥8.0
+---
 
-11. Installation
-Requirements: Python 3.10+ (tested on 3.11/3.12). Groq API key optional.
+## Technologies
+
+| Purpose | Library |
+|---------|---------|
+| UI | Streamlit |
+| LLM (optional) | Groq (OpenAI-compatible) — Llama-3.1-8B-instant |
+| Data Handling | Pandas, NumPy |
+| Statistics | SciPy, StatsModels, scikit-learn |
+| Charts (Interactive) | Plotly Express / Graph Objects |
+| Charts (Static/PDF) | Matplotlib, Seaborn |
+| PDF Export | WeasyPrint |
+| CSV Loading | charset-normalizer (encoding), python-sniffer (delimiter) |
+| Config | python-dotenv |
+| Testing | pytest |
+
+---
+
+## Installation
+
+**Requirements**: Python 3.10+ (developed on 3.12)
 
 ```bash
-cd datastory
+cd /mnt/d/hackthon/datastory
 
-python -m venv venv
-source venv/bin/activate          # Windows: venv\Scripts\activate
+# Create virtual environment
+python -m venv .venv
+source .venv/bin/activate        # Windows: .venv\Scripts\activate
 
+# Install dependencies
 pip install -r requirements.txt
-# Optional for PDF export (Linux/macOS):
-# pip install weasyprint
-# Windows: WeasyPrint requires GTK — use HTML export + browser Print→PDF instead.
 ```
 
-12. Configuration (secrets / .env)
-Groq API key enables AI explanations. Two ways:
+### `requirements.txt`
+```text
+streamlit>=1.35
+pandas>=2.2
+numpy>=1.26
+scipy>=1.13
+statsmodels>=0.14
+scikit-learn>=1.4
+plotly>=5.22
+matplotlib>=3.8
+seaborn>=0.13
+weasyprint>=61
+openpyxl>=3.1
+xlrd>=2.0
+charset-normalizer>=3.3
+python-dotenv>=1.0
+groq>=0.4
+pytest>=8.2
+```
 
-Streamlit secrets (recommended, works on Streamlit Cloud):
-```bash
-mkdir -p .streamlit
-cat > .streamlit/secrets.toml << 'EOF'
+---
+
+## Configuration (Optional AI)
+
+Create `.streamlit/secrets.toml` in the project root (or set environment variables):
+
+```toml
 [groq]
-api_key = "your_groq_api_key_here"
-model = "llama-3.1-8b-instant"      # optional
-provider = "groq"                    # optional
-base_url = "https://api.groq.com/openai/v1"  # optional
-EOF
+api_key = "gsk_..."          # Get free key at console.groq.com
+# provider = "groq"          # Optional: override provider
+# base_url = "https://api.groq.com/openai/v1"
+# model = "llama-3.1-8b-instant"
 ```
 
-Environment variables (local dev):
+**Without this config**, the app runs fully offline using template-based summaries (`utils/fallback.py`).
+
+---
+
+## Running the App
+
 ```bash
-export GROQ_API_KEY="your_groq_api_key_here"
-# Optional overrides:
-# export GROQ_MODEL="llama-3.1-8b-instant"
-# export GROQ_PROVIDER="groq"
-# export GROQ_BASE_URL="https://api.groq.com/openai/v1"
+cd /mnt/d/hackthon/datastory
+source .venv/bin/activate    # if not already active
+
+# Run from parent directory (so `datastory` is importable as package)
+python -m streamlit run datastory/app.py
 ```
 
-Create a key at https://console.groq.com/keys. Free tier is generous. Never commit secrets; .gitignore excludes .streamlit/secrets.toml and .env.
+Open **http://localhost:8501** in your browser.
 
-13. Running the app
+---
+
+## Usage
+
+1. **Upload Data** — Drag & drop a CSV or Excel file (or pick a sample dataset)
+2. **Review Assumptions** — Confirm/fix column types, missing handling, date parsing
+3. **Read the Story** — Four chapters render automatically:
+   - **Chapter 1: Overview** — Shape, types, missingness, quality score, key stats
+   - **Chapter 2: Trends** — Significant trends with Mann-Kendall + regression charts
+   - **Chapter 3: Relationships** — Correlation matrix, cat-num effects, segment heatmaps
+   - **Chapter 4: Anomalies** — Outliers, sudden changes, quality flags
+4. **Interact** — Hover charts, expand "Show Calculation" for code, download evidence CSV
+5. **Ask Follow-ups** — Chat box at bottom: "Why did revenue dip in March?" "Show segments by region"
+6. **Export** — Top-right: Download as Markdown, HTML, PDF, or JSON
+
+---
+
+## Sample Datasets
+
+| File | Rows | Cols | Description |
+|------|------|------|-------------|
+| `sample_data/tips.csv` | 244 | 7 | Classic seaborn tips: total_bill, tip, sex, smoker, day, time, size |
+| `sample_data/subscription_churn.csv` | ~2,000 | 12 | Synthetic SaaS: tenure, monthly_charges, contract, churn, etc. |
+| `sample_data/guardrail_stress.csv` | ~500 | 10 | Stress test: outliers, 30% missing, duplicates, constant cols |
+
+Load via the "Use Sample Data" dropdown in the uploader.
+
+---
+
+## Testing
+
 ```bash
-streamlit run app.py
+cd /mnt/d/hackthon/datastory
+source .venv/bin/activate
+
+# Run all tests
+pytest tests/ -v
+
+# Run specific module
+pytest tests/test_analysis.py -v
+pytest tests/test_guardrails.py -v
 ```
-Open the printed URL (usually http://localhost:8501).
 
-14. Usage
-1. Launch the app. Sidebar shows Groq status (green if configured, yellow if not).
-2. Upload a CSV via file uploader, OR click a sample dataset button (Tips / Subscription Churn / Guardrail Stress).
-3. Review the Data Preview tabs (Sample Data, Column Info, Profile Summary).
-4. Review the Assumption Checklist — confirm each detected assumption (datetime parsing, ID columns, high cardinality, potential target, row semantics).
-5. Click **"Analyze & Generate Story"**.
-6. Read the Executive Summary (expanded by default).
-7. Explore the 4 chapter tabs:
-   - **Big Picture** — metrics, type pie, missing bar, interactive distributions.
-   - **Hidden Opportunities** — trends, correlations, categorical-numeric, segments.
-   - **Unexpected Anomalies** — outliers, sudden changes, quality issues.
-   - **What You Should Do Next** — prioritized actions linked to evidence.
-8. Open any finding's **"Show Calculation"** expander to see the exact Python code.
-9. Ask follow-up questions in the chat box (e.g., "What's the average of total_bill?", "Show correlation between total_bill and tip").
-10. Export via sidebar (Markdown/HTML/PDF) or footer (JSON, Summary MD, New File).
+### Test Coverage
+- `test_analysis.py`: Profile, trends, correlations, anomalies, segments — happy path + edge cases
+- `test_guardrails.py`: BH correction, effect-size filtering, sample-size gates, robustness checks, segment deduplication regression
 
-15. Limitations and requirements
-CSV only — Excel (.xlsx/.xls) not supported in current version.
-Sampling — datasets larger than max_rows (default 10,000) are randomly sampled (seed=42) for speed; full data not analyzed.
-No causal inference — all findings are associational. CAUSATION_NOTE ("Association only — this does not show that one variable causes the other.") is attached to every correlation finding.
-Guardrails are advisory — BH correction controls FDR across tested pairs; robustness checks flag but do not suppress findings. User must interpret caveats.
-Groq rate limits — free tier 30 RPM; very wide datasets (many numeric columns → many pairs) may hit limits. AI explanations are batched per finding with retry; failures fall back to templates.
-PDF export on Windows — WeasyPrint requires GTK/Pango/Cairo which are non-trivial on Windows. Use HTML export → browser "Print to PDF" for equivalent output.
-Semantic type inference — heuristic rules (uniqueness ratios, parse attempts); may misclassify edge cases. Assumption checklist lets user override.
-No persistence — session state lives in browser memory; closing tab loses everything. Use exports to save.
-Single-file upload — no multi-file joins or relational analysis.
-Datetime parsing — pd.to_datetime with errors='coerce'; mixed formats may produce NaT rows silently dropped.
-Minimum group sizes — segments require n≥5 per group; correlations require n≥10 per pair; trends require n≥10 per series.
-Code snippets are templates — they reference column names from the finding evidence; copy-paste into a notebook with your DataFrame named `df` to reproduce.
+---
+
+## Limitations and Requirements
+
+| Limitation | Details |
+|------------|---------|
+| **Memory** | Entire DataFrame held in memory; recommended < 100k rows for responsive UI |
+| **PDF Export** | Requires system libraries (`cairo`, `pango`, `gdk-pixbuf`); may need `sudo apt install` on Linux |
+| **AI Rate Limits** | Groq free tier: 30 RPM; app caches explanations per session |
+| **Datetime Parsing** | Auto-detects common formats; ambiguous formats (MM/DD vs DD/MM) may need manual correction in assumptions |
+| **Categorical Cardinality** | High-cardinality categorical columns (>50 unique) are treated as text, not segments |
+| **No Model Training** | This is descriptive analytics only — no ML model building or prediction |
+| **Single Table** | One dataset per session; no joins or multi-table analysis |
+
+---
+
+## License
+
+MIT License — see `LICENSE` file (add one if needed).
+
+---
+
+## Contributing
+
+1. Fork the repo
+2. Create a feature branch
+3. Add tests for new analysis types or guardrails
+4. Ensure `pytest tests/ -v` passes
+5. Submit a PR
+
+---
+
+**Built for analysts who want statistical rigor without the boilerplate.** 📊
