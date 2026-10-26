@@ -1,0 +1,13 @@
+streamlit
+pandas
+numpy
+scipy
+scikit-learn
+plotly
+openai
+anthropic
+google-generativeai
+jinja2
+pdfkit
+python-dotenv
+chardet
